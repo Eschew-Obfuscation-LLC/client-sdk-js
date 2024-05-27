@@ -161,6 +161,8 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
 
   private isResuming: boolean = false;
 
+  private diagnosticsListener?: (event: string, data: any) => void;
+
   /**
    * Creates a new Room, the primary construct for a LiveKit session.
    * @param options
@@ -186,6 +188,10 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
       ...publishDefaults,
       ...options?.publishDefaults,
     };
+
+    if (options?.diagnosticsListener) {
+      this.diagnosticsListener = options.diagnosticsListener;
+    }
 
     this.maybeCreateEngine();
 
@@ -402,6 +408,7 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
       return;
     }
     this.log.debug(`prepareConnection to ${url}`, this.logContext);
+    this.diagnosticsListener?.('prepareConnection', { url, isCloud: isCloud(new URL(url)) });
     try {
       if (isCloud(new URL(url)) && token) {
         this.regionUrlProvider = new RegionUrlProvider(url, token);
@@ -416,8 +423,10 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
       } else {
         await fetch(toHttpUrl(url), { method: 'HEAD' });
       }
+      this.diagnosticsListener?.('prepareConnection', { success: true });
     } catch (e) {
       this.log.warn('could not prepare connection', { ...this.logContext, error: e });
+      this.diagnosticsListener?.('prepareConnection', { success: false, error: e});
     }
   }
 
@@ -650,6 +659,7 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
     }
 
     try {
+        this.diagnosticsListener?.('attemptConnect', { url });
       const joinResponse = await this.connectSignal(
         url,
         token,
@@ -659,11 +669,13 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
         abortController,
       );
 
+      this.diagnosticsListener?.('attemptConnect', { success: true, joinResponse });
       this.applyJoinResponse(joinResponse);
       // forward metadata changed for the local participant
       this.setupLocalParticipantEvents();
       this.emit(RoomEvent.SignalConnected);
     } catch (err) {
+      this.diagnosticsListener?.('attemptConnect', { success: false, error: err });
       await this.engine.close();
       this.recreateEngine();
       const resultingError = new ConnectionError(`could not establish signal connection`);
@@ -684,6 +696,7 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
     if (abortController.signal.aborted) {
       await this.engine.close();
       this.recreateEngine();
+      this.diagnosticsListener?.('attemptConnect', { success: false, error: 'aborted' });
       throw new ConnectionError(`Connection attempt aborted`);
     }
 
@@ -1141,12 +1154,14 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
     stream: MediaStream,
     receiver?: RTCRtpReceiver,
   ) {
+      this.diagnosticsListener?.('trackAdded', { mediaTrack });
     // don't fire onSubscribed when connecting
     // WebRTC fires onTrack as soon as setRemoteDescription is called on the offer
     // at that time, ICE connectivity has not been established so the track is not
     // technically subscribed.
     // We'll defer these events until when the room is connected or eventually disconnected.
     if (this.state === ConnectionState.Connecting || this.state === ConnectionState.Reconnecting) {
+      this.diagnosticsListener?.('trackAdded', { mediaTrack, success: false });
       const reconnectedHandler = () => {
         this.onTrackAdded(mediaTrack, stream, receiver);
         cleanup();
@@ -1162,6 +1177,7 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
       return;
     }
     if (this.state === ConnectionState.Disconnected) {
+      this.diagnosticsListener?.('trackAdded', { mediaTrack, success: false });
       this.log.warn('skipping incoming track after Room disconnected', this.logContext);
       return;
     }
@@ -1205,6 +1221,7 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
       receiver,
       adaptiveStreamSettings,
     );
+    this.diagnosticsListener?.('trackAdded', { mediaTrack, success: true});
   }
 
   private handleRestarting = () => {
@@ -1228,13 +1245,14 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
       region: joinResponse.serverRegion,
     });
     this.bufferedEvents = [];
-
+    this.diagnosticsListener?.('signalRestarted', { joinResponse });
     this.applyJoinResponse(joinResponse);
 
     try {
       // unpublish & republish tracks
       await this.localParticipant.republishAllTracks(undefined, true);
     } catch (error) {
+      this.diagnosticsListener?.('signalRestarted', { success: false, error });
       this.log.error('error trying to re-publish tracks after reconnection', {
         ...this.logContext,
         error,
@@ -1247,7 +1265,8 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
         ...this.logContext,
         region: joinResponse.serverRegion,
       });
-    } catch {
+    } catch (e) {
+      this.diagnosticsListener?.('signalRestarted', { success: false, error: e });
       // reconnection failed, handleDisconnect is being invoked already, just return here
       return;
     }
@@ -1255,6 +1274,7 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
     this.emit(RoomEvent.Reconnected);
     this.registerConnectionReconcile();
     this.emitBufferedEvents();
+    this.diagnosticsListener?.('signalRestarted', { success: true });
   };
 
   private handleDisconnect(shouldStopTracks = true, reason?: DisconnectReason) {
@@ -1264,6 +1284,7 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
     if (this.state === ConnectionState.Disconnected) {
       return;
     }
+    this.diagnosticsListener?.('disconnecting', { reason });
 
     this.regionUrl = undefined;
 
@@ -1316,9 +1337,13 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
         window.removeEventListener('freeze', this.onPageLeave);
         navigator.mediaDevices?.removeEventListener('devicechange', this.handleDeviceChange);
       }
-    } finally {
+    } catch (error) {
+      this.diagnosticsListener?.('disconnecting', { success: false, reason });
+      throw error;
+    }finally {
       this.setAndEmitConnectionState(ConnectionState.Disconnected);
       this.emit(RoomEvent.Disconnected, reason);
+      this.diagnosticsListener?.('disconnecting', { success: true, reason });
     }
   }
 

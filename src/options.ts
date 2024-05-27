@@ -93,6 +93,8 @@ export interface InternalRoomOptions {
   e2ee?: E2EEOptions;
 
   loggerName?: string;
+
+  diagnosticsListener?: (event: string, data: any) => void;
 }
 
 /**
