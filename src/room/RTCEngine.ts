@@ -165,6 +165,8 @@ export default class RTCEngine extends (EventEmitter as new () => TypedEventEmit
 
   private publisherConnectionPromise: Promise<void> | undefined;
 
+  private diagnosticsListener?: (event: string, data: any) => void;
+
   constructor(private options: InternalRoomOptions) {
     super();
     this.log = getLogger(options.loggerName ?? LoggerNames.Engine);
@@ -172,7 +174,7 @@ export default class RTCEngine extends (EventEmitter as new () => TypedEventEmit
       loggerName: options.loggerName,
       loggerContextCb: () => this.logContext,
     };
-    this.client = new SignalClient(undefined, this.loggerOptions);
+    this.client = new SignalClient(undefined, this.loggerOptions, this.diagnosticsListener);
     this.client.signalLatency = this.options.expSignalLatency;
     this.reconnectPolicy = this.options.reconnectPolicy;
     this.registerOnLineListener();
@@ -193,6 +195,7 @@ export default class RTCEngine extends (EventEmitter as new () => TypedEventEmit
       this.emit(EngineEvent.SubscriptionPermissionUpdate, update);
     this.client.onSpeakersChanged = (update) => this.emit(EngineEvent.SpeakersChanged, update);
     this.client.onStreamStateUpdate = (update) => this.emit(EngineEvent.StreamStateChanged, update);
+    this.diagnosticsListener = options.diagnosticsListener;
   }
 
   /** @internal */
@@ -304,6 +307,7 @@ export default class RTCEngine extends (EventEmitter as new () => TypedEventEmit
     if (this.pendingTrackResolvers[req.cid]) {
       throw new TrackInvalidError('a track with the same ID has already been published');
     }
+    this.diagnosticsListener?.('engine:addTrack', { track: req });
     return new Promise<TrackInfo>((resolve, reject) => {
       const publicationTimeout = setTimeout(() => {
         delete this.pendingTrackResolvers[req.cid];
@@ -313,11 +317,13 @@ export default class RTCEngine extends (EventEmitter as new () => TypedEventEmit
       }, 10_000);
       this.pendingTrackResolvers[req.cid] = {
         resolve: (info: TrackInfo) => {
+          this.diagnosticsListener?.('engine:addTrack:reply', { success: true, track: info });
           clearTimeout(publicationTimeout);
           resolve(info);
         },
         reject: () => {
           clearTimeout(publicationTimeout);
+          this.diagnosticsListener?.('engine:addTrack:reply', { success: false });
           reject(new Error('Cancelled publication by calling unpublish'));
         },
       };
@@ -379,6 +385,7 @@ export default class RTCEngine extends (EventEmitter as new () => TypedEventEmit
       rtcConfig,
       joinResponse.subscriberPrimary,
       this.loggerOptions,
+      this.diagnosticsListener,
     );
 
     this.emit(EngineEvent.TransportsCreated, this.pcManager.publisher, this.pcManager.subscriber);

@@ -61,14 +61,17 @@ export class PCTransportManager {
 
   private loggerOptions: LoggerOptions;
 
+  private diagnosticsListener?: (event: string, data: any) => void;
+
   constructor(
     rtcConfig: RTCConfiguration,
     subscriberPrimary: boolean,
     loggerOptions: LoggerOptions,
+    diagnosticsListener?: (event: string, data: any) => void,
   ) {
     this.log = getLogger(loggerOptions.loggerName ?? LoggerNames.PCManager);
     this.loggerOptions = loggerOptions;
-
+    this.diagnosticsListener = diagnosticsListener;
     this.isPublisherConnectionRequired = !subscriberPrimary;
     this.isSubscriberConnectionRequired = subscriberPrimary;
     this.publisher = new PCTransport(rtcConfig, loggerOptions);
@@ -149,6 +152,7 @@ export class PCTransportManager {
   }
 
   async triggerIceRestart() {
+    this.diagnosticsListener?.('pcmanager:ice:restart', { });
     this.subscriber.restartingIce = true;
     // only restart publisher if it's needed
     if (this.needsPublisher) {
@@ -157,6 +161,7 @@ export class PCTransportManager {
   }
 
   async addIceCandidate(candidate: RTCIceCandidateInit, target: SignalTarget) {
+    this.diagnosticsListener?.('pcmanager:ice:addCandidate', { candidate });
     if (target === SignalTarget.PUBLISHER) {
       await this.publisher.addIceCandidate(candidate);
     } else {

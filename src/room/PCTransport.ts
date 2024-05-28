@@ -73,18 +73,21 @@ export default class PCTransport extends EventEmitter {
   onDataChannel?: (ev: RTCDataChannelEvent) => void;
 
   onTrack?: (ev: RTCTrackEvent) => void;
+  diagnosticsListener?: (event: string, data: any) => void;
 
-  constructor(config?: RTCConfiguration, loggerOptions: LoggerOptions = {}) {
+  constructor(config?: RTCConfiguration, loggerOptions: LoggerOptions = {}, diagnosticsListener?: (event: string, data: any) => void) {
     super();
     this.log = getLogger(loggerOptions.loggerName ?? LoggerNames.PCTransport);
     this.loggerOptions = loggerOptions;
     this.config = config;
     this._pc = this.createPC();
+    this.diagnosticsListener = diagnosticsListener;
   }
 
   private createPC() {
     const pc = new RTCPeerConnection(this.config);
 
+    this.diagnosticsListener?.('pc:createPeerConnection ', { });
     pc.onicecandidate = (ev) => {
       if (!ev.candidate) return;
       this.onIceCandidate?.(ev.candidate);
@@ -128,8 +131,10 @@ export default class PCTransport extends EventEmitter {
 
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
     if (this.pc.remoteDescription && !this.restartingIce) {
+    this.diagnosticsListener?.('pc:ice:addCandidate', { candidate });
       return this.pc.addIceCandidate(candidate);
     }
+    this.diagnosticsListener?.('pc:ice:addPendingCandidate', { candidate });
     this.pendingCandidates.push(candidate);
   }
 
@@ -219,6 +224,7 @@ export default class PCTransport extends EventEmitter {
   // debounced negotiate interface
   negotiate = debounce(async (onError?: (e: Error) => void) => {
     this.emit(PCEvents.NegotiationStarted);
+    this.diagnosticsListener?.('pc:negotiate:start', { });
     try {
       await this.createAndSendOffer();
     } catch (e) {

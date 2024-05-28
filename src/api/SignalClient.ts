@@ -183,7 +183,9 @@ export class SignalClient {
 
   private loggerContextCb?: LoggerOptions['loggerContextCb'];
 
-  constructor(useJSON: boolean = false, loggerOptions: LoggerOptions = {}) {
+  private diagnosticsListener?: (event: string, data: any) => void;
+
+  constructor(useJSON: boolean = false, loggerOptions: LoggerOptions = {}, diagnosticsListener?: (event: string, data: any) => void) {
     this.log = getLogger(loggerOptions.loggerName ?? LoggerNames.Signal);
     this.loggerContextCb = loggerOptions.loggerContextCb;
     this.useJSON = useJSON;
@@ -192,6 +194,7 @@ export class SignalClient {
     this.closingLock = new Mutex();
     this.connectionLock = new Mutex();
     this.state = SignalConnectionState.DISCONNECTED;
+    this.diagnosticsListener = diagnosticsListener;
   }
 
   private get logContext() {
@@ -208,7 +211,9 @@ export class SignalClient {
     // connected
     this.state = SignalConnectionState.CONNECTING;
     this.options = opts;
+    this.diagnosticsListener?.('signal:api:join', { url, token, opts });
     const res = await this.connect(url, token, opts, abortSignal);
+    this.diagnosticsListener?.('signal:api:join', { success: true, result: res });
     return res as JoinResponse;
   }
 
@@ -433,6 +438,7 @@ export class SignalClient {
       if (updateState) {
         this.state = SignalConnectionState.DISCONNECTING;
       }
+      this.diagnosticsListener?.('signal:disconnect', { success: true });
       if (this.ws) {
         this.ws.onmessage = null;
         this.ws.onopen = null;
@@ -468,6 +474,7 @@ export class SignalClient {
   // initial offer after joining
   sendOffer(offer: RTCSessionDescriptionInit) {
     this.log.debug('sending offer', { ...this.logContext, offerSdp: offer.sdp });
+    this.diagnosticsListener?.('signal:offer:send', { offer: offer.sdp });
     this.sendRequest({
       case: 'offer',
       value: toProtoSessionDescription(offer),
@@ -477,6 +484,7 @@ export class SignalClient {
   // answer a server-initiated offer
   sendAnswer(answer: RTCSessionDescriptionInit) {
     this.log.debug('sending answer', { ...this.logContext, answerSdp: answer.sdp });
+    this.diagnosticsListener?.('signal:answer:send', { answer: answer.sdp });
     return this.sendRequest({
       case: 'answer',
       value: toProtoSessionDescription(answer),
@@ -485,6 +493,7 @@ export class SignalClient {
 
   sendIceCandidate(candidate: RTCIceCandidateInit, target: SignalTarget) {
     this.log.trace('sending ice candidate', { ...this.logContext, candidate });
+    this.diagnosticsListener?.('signal:icecandidate:send', { candidate });
     return this.sendRequest({
       case: 'trickle',
       value: new TrickleRequest({
@@ -505,6 +514,7 @@ export class SignalClient {
   }
 
   sendAddTrack(req: AddTrackRequest) {
+    this.diagnosticsListener?.('signal:addTrack', { trackRequest: req });
     return this.sendRequest({
       case: 'addTrack',
       value: req,
@@ -529,6 +539,7 @@ export class SignalClient {
   }
 
   sendUpdateSubscription(sub: UpdateSubscription) {
+    this.diagnosticsListener?.('signal:subscribeTrack', { subscription: sub });
     return this.sendRequest({
       case: 'subscription',
       value: sub,
@@ -651,16 +662,19 @@ export class SignalClient {
     let pingHandled = false;
     if (msg.case === 'answer') {
       const sd = fromProtoSessionDescription(msg.value);
+      this.diagnosticsListener?.('signal:answer:reply', { sessions: sd, success: true });
       if (this.onAnswer) {
         this.onAnswer(sd);
       }
     } else if (msg.case === 'offer') {
       const sd = fromProtoSessionDescription(msg.value);
+      this.diagnosticsListener?.('signal:offer:reply', { offer: sd, success: true });
       if (this.onOffer) {
         this.onOffer(sd);
       }
     } else if (msg.case === 'trickle') {
       const candidate: RTCIceCandidateInit = JSON.parse(msg.value.candidateInit!);
+      this.diagnosticsListener?.('signal:trickle:reply', { candidate });
       if (this.onTrickle) {
         this.onTrickle(candidate, msg.value.target);
       }
@@ -669,6 +683,7 @@ export class SignalClient {
         this.onParticipantUpdate(msg.value.participants ?? []);
       }
     } else if (msg.case === 'trackPublished') {
+      this.diagnosticsListener?.('signal:publishTrack:reply', { success: true });
       if (this.onLocalTrackPublished) {
         this.onLocalTrackPublished(msg.value);
       }
@@ -689,6 +704,7 @@ export class SignalClient {
         this.onRoomUpdate(msg.value.room);
       }
     } else if (msg.case === 'connectionQuality') {
+      this.diagnosticsListener?.('signal:connectionQuality:reply', { msg: msg.value, success: true });
       if (this.onConnectionQuality) {
         this.onConnectionQuality(msg.value);
       }
